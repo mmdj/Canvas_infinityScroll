@@ -10,13 +10,14 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
 import com.mdolzhansky.canvas_infinityscroll.model.Cell;
 
 /**
- *  Created by mmdj on 29.04.2017.
+ * Created by mmdj on 29.04.2017.
  */
 
 class DrawView extends SurfaceView implements SurfaceHolder.Callback {
@@ -35,6 +36,17 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
     private int START_POSITION_Y = 0;
     int nCellsHorizontal = 0;
     int nCellsVertical = 0;
+
+
+    private float mPosX = 0, mPosY = 0;  // will indicate how much we have panned. Use these to adjust the graphics
+    private float mScaleFactor = 1.f;  // indicate the scalling. Use this to adjust graphics
+    private float mLastTouchX;
+    private float mLastTouchY;
+    private static final int INVALID_POINTER_ID = -1;
+    private int mActivePointerId = INVALID_POINTER_ID;
+    GestureDetector mTapListener;
+    ScaleGestureDetector mScaleDetector;
+
 
     /* **********Start constructors***************************/
     public DrawView(Context context) {
@@ -60,8 +72,13 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
         DisplayMetrics displayMetrics = context.getResources().getDisplayMetrics();
         screenWidth = displayMetrics.widthPixels;
         screenHeight = displayMetrics.heightPixels;
+        iniTouchHandling(context);
     }
 
+    public void iniTouchHandling(Context context) {
+        mScaleDetector = new ScaleGestureDetector(context, new ScaleListener());
+        mTapListener = new GestureDetector(context, new TapListener());
+    }
     /* **********End constructors***************** */
 
 
@@ -93,11 +110,11 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
     }
 
 
-    class DrawThread extends Thread implements GestureDetector.OnGestureListener {
+    private class DrawThread extends Thread {
 
         private boolean running = false;
         private SurfaceHolder surfaceHolder;
-        private GestureDetector mGestureDetector;
+        Canvas canvas;
 
         public DrawThread(SurfaceHolder surfaceHolder) {
             this.surfaceHolder = surfaceHolder;
@@ -123,7 +140,6 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
 
         @Override
         public void run() {
-            Canvas canvas;
 
             while (running) {
                 canvas = null;
@@ -132,10 +148,7 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
                     if (canvas == null)
                         continue;
 
-
-
                         /*  *************from here drawing: ************ */
-
 
                     //background
                     canvas.drawColor(Color.BLACK);
@@ -186,40 +199,123 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
         }
 
 
-        @Override
-        public boolean onDown(MotionEvent e) {
-            return false;
-        }
+    }
 
-        @Override
-        public void onShowPress(MotionEvent e) {
+    @Override
+    public boolean onTouchEvent(MotionEvent ev) {
+        // let our gesture detectors process the events
+        mScaleDetector.onTouchEvent(ev);
+        mTapListener.onTouchEvent(ev);
+        final int action = ev.getAction();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN: {
+                final float x = ev.getX();
+                final float y = ev.getY();
 
-        }
-
-        @Override
-        public boolean onSingleTapUp(MotionEvent e) {
-            return false;
-        }
-
-        @Override
-        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
-
-            if (e1.getY() < e2.getY()) {
-                Log.d("Gesture ", " Scroll Down");
+// Remember where we started
+                mLastTouchX = x;
+                mLastTouchY = y;
+                mActivePointerId = ev.getPointerId(0);
+                break;
             }
-            if (e1.getY() > e2.getY()) {
-                Log.d("Gesture ", " Scroll Up");
+
+            case MotionEvent.ACTION_MOVE: {
+                final int pointerIndex = ev.findPointerIndex(mActivePointerId);
+                final float x = ev.getX(pointerIndex);
+                final float y = ev.getY(pointerIndex);
+
+                if (!mScaleDetector.isInProgress()) {
+// Calculate the distance moved
+                    final float dx = x - mLastTouchX;
+                    final float dy = y - mLastTouchY;
+
+// Move the object
+                    mPosX += dx;
+                    mPosY += dy;
+
+// Remember this touch position for the next move event
+                    mLastTouchX = x;
+                    mLastTouchY = y;
+
+// Invalidate to request a redraw
+// invalidate(); // use this is a regular canvas is being used
+                    drawThread.setOval();
+                    if (drawThread.done == true)
+                        drawThread.drawCurrentArc();
+
+                }
             }
+                break;
+                case MotionEvent.ACTION_UP: {
+                    mActivePointerId = INVALID_POINTER_ID;
+                    break;
+                }
+                case MotionEvent.ACTION_CANCEL: {
+                    mActivePointerId = INVALID_POINTER_ID;
+                    break;
+                }
+                case MotionEvent.ACTION_POINTER_UP: {
+// Extract the index of the pointer that left the touch sensor
+                    final int pointerIndex = (action & MotionEvent.ACTION_POINTER_INDEX_MASK)
+                            >> MotionEvent.ACTION_POINTER_INDEX_SHIFT;
+                    final int pointerId = ev.getPointerId(pointerIndex);
+                    if (pointerId == mActivePointerId) {
+// This was our active pointer going up. Choose a new
+// active pointer and adjust accordingly.
+                        final int newPointerIndex = pointerIndex == 0 ? 1 : 0;
+                        mLastTouchX = ev.getX(newPointerIndex);
+                        mLastTouchY = ev.getY(newPointerIndex);
+                        mActivePointerId = ev.getPointerId(newPointerIndex);
+                    }
+                    break;
+                }
+            }// end switch statement
+        return true;// end onTouch
+        }
+
+
+
+    public class ScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+
+
+        @Override
+        public boolean onScale(ScaleGestureDetector detector) {
+            mScaleFactor *= detector.getScaleFactor();
+// Don't let the object get too small or too large.
+            mScaleFactor = Math.max(0.1f, Math.min(mScaleFactor, 5.0f));
+
+//invalidate(); // use this for a regular canvas (i.e., not a SurfaceView)
+            drawThread.setOval();
+            if (drawThread.done == true)
+                drawThread.drawCurrentArc();
+
+            return true;
+        }
+    }
+
+
+    public class TapListener extends GestureDetector.SimpleOnGestureListener {
+        @Override
+        public boolean onDoubleTap(MotionEvent e) {
+            Log.e("SurfaceViewFun", "double tap " + e.getX() + " " + e.getY());
             return true;
         }
 
         @Override
         public void onLongPress(MotionEvent e) {
-
+            Log.e("SurfaceViewFun", "got long press at location x=" + e.getX() + " y=" + e.getY());
         }
 
         @Override
         public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+            Log.e("SurfaceViewFun", "fling: started at (" + e1.getX() + " ," + e1.getY() + "). Ended at (" + e2.getX() + " ," + e2.getY() + "). With velocity (" + velocityX + " ," + velocityY + ")");
+            return true;
+        }
+
+        @Override
+        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+            Log.e("SurfaceViewFun", "scroll: started at (" + e1.getX() + " ," + e1.getY() + "). Ended at (" + e2.getX() + " ," + e2.getY() + "). With total distance (" + distanceX + " ," + distanceY + ")");
+
             if (e1.getX() < e2.getX()) {
                 Log.d("Gesture ", "Left to Right swipe: " + e1.getX() + " - " + e2.getX());
                 Log.d("Speed ", String.valueOf(velocityX) + " pixels/second");
@@ -236,14 +332,11 @@ class DrawView extends SurfaceView implements SurfaceHolder.Callback {
                 Log.d("Gesture ", "Down to Up swipe: " + e1.getX() + " - " + e2.getX());
                 Log.d("Speed ", String.valueOf(velocityY) + " pixels/second");
             }
-            return true;
 
+            return true;
         }
     }
-
-    @Override
-    public boolean onTouchEvent(MotionEvent event) {
-        return super.onTouchEvent(event);
-    }
 }
+
+
 
